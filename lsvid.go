@@ -12,6 +12,14 @@ package lsvid
 // ToDo: 
 // Temporary: Make spire-devon public and publish also the modified go-spiffe package.
 
+// Notes:
+// This is a proof of concept that requires the SPIRE-devon fork (hpe-spiffe-spire project) to run. 
+// This spire fork modifies the FetchJWTSVID endpoint to return the workload LSVID.
+// It also requires the go-spiffe modified pkg that skip the JWT-SVID validation.
+
+// ToDo: 
+// Temporary: Make spire-devon public and publish also the modified go-spiffe package.
+
 import (
 
 	"context"
@@ -157,6 +165,7 @@ func Extend(token *LSVID, newPayload *Payload, version int8, key ...interface{})
 		// extract key from signature
 		aggKey, partSig := sig.ExtractAggKey()
 
+<<<<<<< HEAD
 		// convert partsig to byte
 		partSigBytes, err := schoco.PointToByte(partSig)
 		if err != nil {
@@ -169,6 +178,10 @@ func Extend(token *LSVID, newPayload *Payload, version int8, key ...interface{})
 			Nested:		token,
 			Payload:	newPayload,	
 		}
+=======
+// Validate the given LSVID. 
+func Validate(lsvid *Token, bundle *Token) (bool, error) {
+>>>>>>> 169fba1be57d366312f8dae3f073cb01fbc0d316
 
 		// Marshal to JSON
 		tmpToSign, err := json.Marshal(newToken)
