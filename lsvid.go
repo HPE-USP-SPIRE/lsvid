@@ -4,6 +4,14 @@ package lsvid
 // Ref document:
 // https://docs.google.com/document/d/15rfAkzNTQa1ycs-fn9hyIYV5HbznPBsxB-f0vxhNJ24/edit?usp=drive_link
 
+// Notes:
+// This is a proof of concept that requires the SPIRE-devon fork (hpe-spiffe-spire project) to run. 
+// This spire fork modifies the FetchJWTSVID endpoint to return the workload LSVID.
+// It also requires the go-spiffe modified pkg that skip the JWT-SVID validation.
+
+// ToDo: 
+// Temporary: Make spire-devon public and publish also the modified go-spiffe package.
+
 import (
 
 	"context"
@@ -128,9 +136,6 @@ func Extend(lsvid *LSVID, newPayload *Payload, key crypto.Signer) (string, error
 }
 
 // Validate the given LSVID. 
-// TODO: include the root (trust bundle) LSVID as parameter, to validate the inner signature
-// TODO: With the bundle being part of LSVID, now it is possible to validate the root. 
-// TODO: Must include the bundle in validate parameters and the necessary verifications.
 func Validate(lsvid *Token, bundle *Token) (bool, error) {
 
 	for (lsvid.Nested != nil) {
