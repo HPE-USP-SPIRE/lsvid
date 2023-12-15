@@ -2,13 +2,18 @@ module github.com/hpe-usp-spire/lsvid
 
 go 1.19
 
-require github.com/spiffe/go-spiffe/v2 v2.1.6
+require (
+	github.com/hpe-usp-spire/schoco v1.1.4
+	github.com/spiffe/go-spiffe/v2 v2.1.6
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.0 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/zeebo/errs v1.3.0 // indirect
+	go.dedis.ch/fixbuf v1.0.3 // indirect
+	go.dedis.ch/kyber/v3 v3.1.0 // indirect
 	golang.org/x/crypto v0.6.0 // indirect
 	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/net v0.7.0 // indirect

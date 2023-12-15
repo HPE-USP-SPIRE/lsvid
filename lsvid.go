@@ -2,7 +2,15 @@ package lsvid
 
 // Package developed by SPIFFE Assertions and Tokens WG, to provide, extend and validate Lightweight SVID.
 // Ref document:
-// https://docs.google.com/document/d/15rfAkzNTQa1ycs-fn9hyIYV5HbznPBsxB-f0vxhNJ24/edit?usp=drive_link
+// https://docs.google.com/document/d/15rfAkzNTQa1ycs-fn9hyIYV5HbznPBsxB-f0vxhNJ24
+
+// Notes:
+// This is a proof of concept that requires the SPIRE-devon fork (hpe-spiffe-spire project) to run. 
+// This spire fork modifies the FetchJWTSVID endpoint to return the workload LSVID.
+// It also requires the go-spiffe modified pkg that skip the JWT-SVID validation.
+
+// ToDo: 
+// Temporary: Make spire-devon public and publish also the modified go-spiffe package.
 
 import (
 
@@ -21,6 +29,8 @@ import (
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"time"
 
+	"github.com/hpe-usp-spire/schoco"
+
 )
 
 type LSVID struct {
@@ -28,21 +38,25 @@ type LSVID struct {
 	Bundle		*Token		`json:"bundle"`		// The Trust bundle document
 }
 
+// The token must contain a Payload and a Signature. The Nested value is optional, and must be used when extending the token.
 type Token struct {	
 	Nested		*Token		`json:"nested,omitempty"`
 	Payload		*Payload	`json:"payload"`
 	Signature	[]byte		`json:"signature"`
 }
 
+// The mandatory claims are pre-defined. Any other info to be added must be inserted in Data.
+// For proof of concept compatibility purposes, we are keeping the Dpr and Dpa claims. It must be removed later.
 type Payload struct {
-	Ver 		int8		`json:"ver,omitempty"`
-	Alg 		string		`json:"alg,omitempty"`
-	Iat			int64		`json:"iat,omitempty"`
-	Iss			*IDClaim	`json:"iss,omitempty"`
-	Sub			*IDClaim	`json:"sub,omitempty"`
-	Aud			*IDClaim	`json:"aud,omitempty"`
-	Dpa			string		`json:"dpa,omitempty"`
-	Dpr			string		`json:"dpr,omitempty"`
+	Ver 		int8					`json:"ver,omitempty"`
+	Alg 		string					`json:"alg,omitempty"`
+	Iat			int64					`json:"iat,omitempty"`
+	Iss			*IDClaim				`json:"iss,omitempty"`
+	Sub			*IDClaim				`json:"sub,omitempty"`
+	Aud			*IDClaim				`json:"aud,omitempty"`
+	Dpa			string					`json:"dpa,omitempty"`
+	Dpr			string					`json:"dpr,omitempty"`
+	Data		map[string]interface{}	`json:"data,omitempty"`
 }
 
 type IDClaim struct {
@@ -86,120 +100,305 @@ func Decode(encLSVID string) (*LSVID, error) {
 }
 
 // Add the new Token to extend an existing one, and sign using provided key
-func Extend(lsvid *LSVID, newPayload *Payload, key crypto.Signer) (string, error) {
-	// TODO: Modify the payload struct to support custom claims (maybe using map[string]{interface})
-	// Create the extended LSVID structure
+func Extend(token *LSVID, newPayload *Payload, version int8, key ...interface{}) (string, error) {
 
-	token := &Token{
-		Nested:		lsvid.Token,
-		Payload:	newPayload,	
-	}
+	// Choose between ID / SchoCo
+	var s []byte
+	var newToken *Token
+	// var outToken string
+    switch version {
+	case 0:
 
-	// Marshal to JSON
-	tmpToSign, err := json.Marshal(token)
-	if err != nil {
-		return "", fmt.Errorf("Error generating json: %v\n", err)
-	} 
+		// Create the extended LSVID structure
+		token := &Token{
+			Nested:		lsvid.Token,
+			Payload:	newPayload,	
+		}
 
-	// Sign extlSVID
-	hash 	:= hash256.Sum256(tmpToSign)
-	s, err := key.Sign(rand.Reader, hash[:], crypto.SHA256)
-	if err != nil {
-		return "", fmt.Errorf("Error generating signed assertion: %v\n", err)
-	} 
+		// Marshal to JSON
+		tmpToSign, err := json.Marshal(token)
+		if err != nil {
+			return "", fmt.Errorf("Error generating json: %v\n", err)
+		} 
 
-	// Set extLSVID signature
-	token.Signature = s
+		ecdsaKey, ok := key[0].(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("key is not an ECDSA private key")
+		}
 
-	// Create the extended LSVID
-	extLSVID := &LSVID {
-		Token:		token,
-		Bundle:		lsvid.Bundle,
-	}
+		// Sign extlSVID
+		hash 	:= hash256.Sum256(tmpToSign)
+		s, err := ecdsaKey.Sign(rand.Reader, hash[:], crypto.SHA256)
+		if err != nil {
+			return "", fmt.Errorf("Error generating signed assertion: %v\n", err)
+		} 
 
-	// Encode signed LSVID
-	outLSVID, err := Encode(extLSVID)
-	if err != nil {
-		return "", fmt.Errorf("Error encoding LSVID: %v\n", err)
-	} 
+		// Set extLSVID signature
+		token.Signature = s
+
+		// Create the extended LSVID
+		extLSVID := &LSVID {
+			Token:		token,
+			Bundle:		lsvid.Bundle,
+		}
+
+		// Encode signed LSVID
+		outLSVID, err := Encode(extLSVID)
+		if err != nil {
+			return "", fmt.Errorf("Error encoding LSVID: %v\n", err)
+		} 
+		
+	case 1:
+		// Uses schoco
+
+		// Convert []byte to sig
+		sig, err := schoco.ByteToSignature(token.Signature)
+
+		// extract key from signature
+		aggKey, partSig := sig.ExtractAggKey()
+
+		// convert partsig to byte
+		partSigBytes, err := schoco.PointToByte(partSig)
+		if err != nil {
+			return nil, fmt.Errorf("Error conveting point to byte: %v", err)
+		} 
+		token.Signature = partSigBytes
+
+		// Define the new struct
+		newToken = &Token{
+			Nested:		token,
+			Payload:	newPayload,	
+		}
+
+		// Marshal to JSON
+		tmpToSign, err := json.Marshal(newToken)
+		if err != nil {
+			return nil, fmt.Errorf("Error generating json: %v\n", err)
+		} 
+
+		// Sign with aggKey key
+		newSig := schoco.StdSign(fmt.Sprintf("%s", tmpToSign), aggKey)
+		s, err = newSig.ToByte()
+		if err != nil {
+			return nil, fmt.Errorf("Error generating signed assertion: %v\n", err)
+		} 
+		// Set extToken signature
+		newToken.Signature = s
+
+		// Encode signed Token
+		outLSVID, err = Encode(newToken)
+		if err != nil {
+			return "", fmt.Errorf("Error encoding LSVID: %v\n", err)
+		}
 
 	return outLSVID, nil
-
+	}
 }
 
+// // Extend the existin lsvid with the new payload, signing with the aggregation key from last signature
+// func AnonExtend(lsvid *LSVID, newPayload *Payload) (string, error) {
+// 	// TODO: Modify the payload struct to support custom claims (maybe using map[string]{interface})
+
+// 	// Create the extended LSVID structure
+// 	token := &Token{
+// 		Nested:		lsvid.Token,
+// 		Payload:	newPayload,	
+// 	}
+
+// 	// Marshal to JSON
+// 	tmpToSign, err := json.Marshal(token)
+// 	if err != nil {
+// 		return "", fmt.Errorf("Error generating json: %v\n", err)
+// 	} 
+
+// 	// unmarshal signature
+// 	var sigFromBytes Signature
+// 	err := json.Unmarshal(lsvid.Signature, &sigFromBytes)
+// 	if err != nil {
+// 		return "", fmt.Errorf("Error unmarshaling signature: %v\n", err)
+// 	} 
+
+// 	// // Extract aggregation key and partial signature
+// 	// aggKey, partSig := sigFromBytes.ExtractAggKey()
+
+// 	// // set partsig as new token signature
+// 	// lsvid.Signature = []byte(partSig.String())
+
+// 	// Aggregate
+// 	// hash 	:= hash256.Sum256(tmpToSign)
+// 	// s, err := key.Sign(rand.Reader, hash[:], crypto.SHA256)
+// 	// if err != nil {
+// 	// 	return "", fmt.Errorf("Error generating signed assertion: %v\n", err)
+// 	// } 
+// 	partSig, lastsig := schoco.Aggregate(tmpToSign, sigFromBytes)
+
+// 	// set partsig as new token signature
+// 	lsvid.Signature = []byte(partSig.String())
+
+// 	// Set extLSVID signature
+// 	token.Signature = []byte(lastsig.String())
+
+// 	// Create the extended LSVID
+// 	extLSVID := &LSVID {
+// 		Token:		token,
+// 		Bundle:		lsvid.Bundle,
+// 	}
+
+// 	// Encode signed LSVID
+// 	outLSVID, err := Encode(extLSVID)
+// 	if err != nil {
+// 		return "", fmt.Errorf("Error encoding LSVID: %v\n", err)
+// 	} 
+
+// 	return outLSVID, nil
+
+// }
+
 // Validate the given LSVID. 
-// TODO: include the root (trust bundle) LSVID as parameter, to validate the inner signature
-// TODO: With the bundle being part of LSVID, now it is possible to validate the root. 
-// TODO: Must include the bundle in validate parameters and the necessary verifications.
-func Validate(lsvid *Token, bundle *Token) (bool, error) {
+func Validate(lsvid *Token, version int8, bundle *Token) (bool, error) {
+    
+	switch version {
+	case 0:
+		// Validate ID Mode with ECDSA
+		for (lsvid.Nested != nil) {
 
-	for (lsvid.Nested != nil) {
+			// Check Aud -> Iss link
+			if lsvid.Payload.Iss.CN != lsvid.Nested.Payload.Aud.CN {
+				return false, fmt.Errorf("Aud -> Iss link validation failed\n")
+			}
+			fmt.Printf("Aud -> Iss link validation successful!\n")
 
-		// Check Aud -> Iss link
-		if lsvid.Payload.Iss.CN != lsvid.Nested.Payload.Aud.CN {
-			return false, fmt.Errorf("Aud -> Iss link validation failed\n")
+			// Marshal the LSVID struct into JSON
+			tmpLSVID := &Token{
+				Nested:		lsvid.Nested,
+				Payload:	lsvid.Payload,
+			}
+			lsvidJSON, err := json.Marshal(tmpLSVID)
+			if err != nil {
+			return false, fmt.Errorf("error marshaling LSVID to JSON: %v\n", err)
+			}
+			hash 	:= hash256.Sum256(lsvidJSON)
+
+			// Parse the public key
+			// TODO: Currently the pk is extracted from the iss lsvid that MUST be present
+			// and we are still not validating the trust bundle.
+			var issLSVID *LSVID
+			issLSVID = lsvid.Payload.Iss.ID
+			for (issLSVID.Nested != nil) {
+				// fmt.Printf("Issuer nested LSVID found! %v\n", issLSVID.Nested)
+				issLSVID = issLSVID.Nested
+			}
+			issLSSubPk, err := x509.ParsePKIXPublicKey(issLSVID.Payload.Sub.PK)
+			if err != nil {
+				return false, fmt.Errorf("Failed to parse public key: %v\n", err)
+			}
+
+			// validate the signature
+			log.Printf("Verifying signature created by %s\n", lsvid.Payload.Iss.CN)
+			verify := ecdsa.VerifyASN1(issLSSubPk.(*ecdsa.PublicKey), hash[:], lsvid.Signature)
+			if verify == false {
+				fmt.Printf("\nSignature validation failed!\n\n")
+				return false, nil
+			}
+			log.Printf("Signature validation successful!\n")
+
+			// jump to nested token
+			lsvid = lsvid.Nested
 		}
-		fmt.Printf("Aud -> Iss link validation successful!\n")
 
-		// Marshal the LSVID struct into JSON
-		tmpLSVID := &Token{
-			Nested:		lsvid.Nested,
-			Payload:	lsvid.Payload,
-		}
-		lsvidJSON, err := json.Marshal(tmpLSVID)
+		// reached the inner most LSVID. 
+		// Marshal the bundle struct into JSON
+		bundleJSON, err := json.Marshal(bundle.Payload)
 		if err != nil {
-		return false, fmt.Errorf("error marshaling LSVID to JSON: %v\n", err)
+		return false, fmt.Errorf("error marshaling bundle LSVID to JSON: %v\n", err)
 		}
-		hash 	:= hash256.Sum256(lsvidJSON)
+		hash 	:= hash256.Sum256(bundleJSON)
 
 		// Parse the public key
-		// TODO: Currently the pk is extracted from the iss lsvid that MUST be present
-		// and we are still not validating the trust bundle.
-		var issLSVID *Token
-		issLSVID = lsvid.Payload.Iss.ID
-		for (issLSVID.Nested != nil) {
-			// fmt.Printf("Issuer nested LSVID found! %v\n", issLSVID.Nested)
-			issLSVID = issLSVID.Nested
-		}
-		issLSSubPk, err := x509.ParsePKIXPublicKey(issLSVID.Payload.Sub.PK)
+		issPk, err := x509.ParsePKIXPublicKey(bundle.Payload.Iss.PK)
 		if err != nil {
 			return false, fmt.Errorf("Failed to parse public key: %v\n", err)
 		}
+		log.Printf("Public key to be used: %s", issPk)
 
-		// validate the signature
-		log.Printf("Verifying signature created by %s\n", lsvid.Payload.Iss.CN)
-		verify := ecdsa.VerifyASN1(issLSSubPk.(*ecdsa.PublicKey), hash[:], lsvid.Signature)
+		log.Printf("Verifying signature created by %s\n", bundle.Payload.Iss.CN)
+		verify := ecdsa.VerifyASN1(issPk.(*ecdsa.PublicKey), hash[:], bundle.Signature)
 		if verify == false {
-			fmt.Printf("\nSignature validation failed!\n\n")
+			fmt.Printf("\nBundle signature validation failed!\n\n")
 			return false, nil
 		}
-		log.Printf("Signature validation successful!\n")
 
-		// jump to nested token
-		lsvid = lsvid.Nested
+	case 1:
+		
+		// Validate anon mode with SchoCo
+
+		// Collect partial sigs and messages from all nested tokens
+		var	setPartSig	[]kyber.Point
+		var lastSig		schoco.Signature
+		var	setMsg		[]string
+		
+		for i := 0; lsvid.Nested != nil; i++ {
+			tmpToken := &LSVID{
+				Nested:		lsvid.Nested,
+				Payload:	lsvid.Payload,
+			}
+
+			// Marshal to JSON
+			tokenJSON, err := json.Marshal(tmpToken)
+			if err != nil {
+				log.Printf("Error marshaling Token to JSON: %v\n", err)
+			}
+			// Collect signed message
+			setMsg = append(setMsg, fmt.Sprintf("%s", tokenJSON))
+
+			// Collect signature
+			if i == 0 {
+				lastSig, err = schoco.ByteToSignature(lsvid.Signature)
+				if err != nil {
+					log.Printf("Error converting byte to signature: %v\n", err)
+				}
+			} else {
+				setPartSig[i], err = schoco.ByteToPoint(lsvid.Signature)
+				if err != nil {
+					log.Printf("Error converting byte to Point: %v\n", err)
+				}
+			}
+
+			// jump to nested token
+			token = lsvid.Nested
+
+		}
+
+		// reach most inner token
+		// Collect msg
+		tmpToken := &LSVID{
+			Payload:	lsvid.Payload,
+		}
+		tokenJSON, err := json.Marshal(tmpToken)
+		if err != nil {
+			log.Printf("error marshaling Token to JSON: %v\n", err)
+		}
+		setMsg = append(setMsg, fmt.Sprintf("%s", tokenJSON))
+
+		// collect partsig
+		tmpPartSig, err := schoco.ByteToPoint(lsvid.Signature)
+		if err != nil {
+			log.Printf("Error converting byte to Point: %v\n", err)
+		}
+		setPartSig = append(setPartSig, tmpPartSig)
+
+		// collect root pk
+		rootPK, err := schoco.ByteToPoint(lsvid.Payload.Iss.PK)
+		if err != nil {
+			log.Printf("Error converting byte to Point: %v\n", err)
+		}
+
+		if !schoco.Verify(rootPK, setMsg, setPartSig, lastSig)	{
+			log.Printf("Validate with schoco.Verify failed!\n")
+		}
 	}
 
-	// reached the inner most LSVID. 
-	// Marshal the bundle struct into JSON
-	bundleJSON, err := json.Marshal(bundle.Payload)
-	if err != nil {
-	return false, fmt.Errorf("error marshaling bundle LSVID to JSON: %v\n", err)
-	}
-	hash 	:= hash256.Sum256(bundleJSON)
 
-	// Parse the public key
-	issPk, err := x509.ParsePKIXPublicKey(bundle.Payload.Iss.PK)
-	if err != nil {
-		return false, fmt.Errorf("Failed to parse public key: %v\n", err)
-	}
-	log.Printf("Public key to be used: %s", issPk)
-
-	log.Printf("Verifying signature created by %s\n", bundle.Payload.Iss.CN)
-	verify := ecdsa.VerifyASN1(issPk.(*ecdsa.PublicKey), hash[:], bundle.Signature)
-	if verify == false {
-		fmt.Printf("\nBundle signature validation failed!\n\n")
-		return false, nil
-	}
 
 	return true, nil
 }
